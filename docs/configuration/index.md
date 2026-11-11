@@ -29,10 +29,10 @@ A config file is one JSON object. `models` lists the models; `engine` applies to
 - Where a setting goes in a config file: `server` is the `server` block, `entry` a model entry or the top-level `engine`,
   `engine` (an engine flag) the same places, `model entry` a model entry only.
 - Keys are flag names without dashes. Switches are `true`. A repeatable option (`allowed-host`, `cors-origin`, `image-url-host`,
-  `image-dir`) takes a list. `model` paths are relative to the file.
+  `image-dir`) takes a list. `model`, `tokenizer`, `image-dir` and `api-key-file` paths are relative to the location of the config file.
 - A row marked Flash-Next only or DeepSeek only stops the start in a model entry or on the command line of the other model; in the top-level `engine` it is left out for that model, with a start line ([checks at start](models.md#checks-at-start)).
 - Precedence: command line, then config file, then defaults; `--model` and `--alias` do not go with `--config` (its entries name the models).
-  A wrong block or an unknown name stops the start. `api-key` cannot be in a file.
+  A wrong block or an unknown name stops the start. `api-key` cannot be given in a config file; use `api-key-file` to read the key from a dedicated key file.
 - The defaults are the fastest settings that need no knowledge of the machine. The keys that change output or memory (8,192 context,
   fp16 KV) are kept for you to set.
 
@@ -56,9 +56,10 @@ Command line `--name`; the Where column says which config block takes it.
 | --- | --- | --- | --- | --- |
 | `model` | model entry | path | required | The `.basalt` file: weights, tokenizer, chat template, drafter, vision projector and default sampling. |
 | `alias` | model entry | string | name in the file | The model name the API reports. |
-| `host` | server | address | `127.0.0.1` | Listen address. `0.0.0.0` serves the network; never without `api-key`. |
+| `host` | server | address | `127.0.0.1` | Listen address. `0.0.0.0` serves the network; never without `api-key` or `api-key-file`. |
 | `port` | server | integer | `8080` | TCP port. |
 | `api-key` | command line | string | none | Require this key on `/v1/*` (`Authorization: Bearer` or `x-api-key`). Command line only. |
+| `api-key-file` | server, command line | path | none | Use file's contents as the API key. Leading and trailing CRs and LFs are stripped; all other whitespace is retained. Mutually exclusive with `api-key`. |
 | `allowed-host` | server | string, repeatable | none | Also answer to this `Host` name; `"*"` turns the check off. |
 | `cors-origin` | server | string, repeatable | none | Let web pages from this origin call `/v1/*`. |
 | `fit-max-tokens` | entry | switch | off | Clamp `max_tokens` to the remaining context instead of a 400. |

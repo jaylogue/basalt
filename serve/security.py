@@ -32,6 +32,17 @@ def api_key_of(value) -> str:
     return key.strip()
 
 
+def api_key_from_file(path: str) -> str:
+    """The key as the file holds it: its whole contents but for the CR and LF around it, read once at start. Bytes
+    outside UTF-8 arrive as U+FFFD, the form http.server hands a non-ASCII header, so key_matches still compares.
+    A file whose content is only line ends keeps them: api_key_of then refuses it, a blank key never means "no key".
+    OSError when the file cannot be read."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    stripped = content.strip("\r\n")
+    return content if not stripped.strip() else stripped
+
+
 def key_matches(given: str, key: str) -> bool:
     """`given` is a header's value as http.server read it, each byte one character. A key with characters outside
     ASCII arrives as UTF-8 from most clients and as Latin-1 from some; the right key passes in both forms.

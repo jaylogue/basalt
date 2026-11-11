@@ -1,6 +1,6 @@
 """OpenAI, Anthropic and Responses endpoints over engines that map token ids to tokens, one model loaded at a time.
 
-    basalt serve --model FILE.basalt [--alias NAME] [--host H] [--port P] [--gpu 0,1] [--api-key KEY] ...
+    basalt serve --model FILE.basalt [--alias NAME] [--host H] [--port P] [--gpu 0,1] [--api-key KEY | --api-key-file FILE] ...
     python -m serve.server --model FILE.basalt --engine-bin bin/basalt ...
     python -m serve.server --config config.json          (each entry of its "models" is one model)
     python -m serve.server --mock-engine --port 8080
@@ -36,8 +36,8 @@ from serve.engine.vision import (EngineVision, Vision, check_gpu, child_env, eng
                                  gpu_text, gpus_in_play, model_plan, vision_card, vision_env, vision_item)
 from serve.models import dialect_for  # noqa: E402
 from serve.handler import Server, serve  # noqa: E402
-from serve.security import (LOOPBACK_NAMES, allowed_hosts_of, api_key_of, exposed_without_key,  # noqa: E402
-                            lan_addresses, origins_of)
+from serve.security import (LOOPBACK_NAMES, allowed_hosts_of, api_key_from_file, api_key_of,  # noqa: E402
+                            exposed_without_key, lan_addresses, origins_of)
 from serve.router import Router  # noqa: E402
 from serve.service import Service  # noqa: E402
 from serve.util.logbuf import ColorStream, LogBuffer, TeeStream, tail_file  # noqa: E402
@@ -355,10 +355,16 @@ def main() -> int:
     if a.max_payload_mib < 1:
         fail(f"--max-payload-mib {a.max_payload_mib} must be at least 1")
     svc.max_payload = a.max_payload_mib << 20
-    try:
-        svc.api_key = api_key_of(a.api_key)
+    try:                                                # the key file is read once, here at start
+        svc.api_key = api_key_of(api_key_from_file(a.api_key_file) if a.api_key_file else a.api_key)
+        if a.api_key_file and not svc.api_key:          # an empty file: no key, not a silent open server
+            raise ValueError("an API key file was given but it holds no key")
+    except OSError as e:
+        print(f"[server] error: --api-key-file: cannot read the key: {e.strerror or e}", file=sys.stderr)
+        return 2
     except ValueError as e:
-        print(f"[server] error: {e}: give a key, or leave --api-key out", file=sys.stderr)
+        give = "--api-key-file" if a.api_key_file else "--api-key"
+        print(f"[server] error: {e}: give a key, or leave {give} out", file=sys.stderr)
         return 2
     try:
         svc.cors_origins = origins_of(a.cors_origin, "--cors-origin", wildcard=True)

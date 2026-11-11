@@ -19,7 +19,7 @@ from serve.util.console import tagged
 MIN_SLOT_CONTEXT = 256          # the least context a slot is given when --max-context is shared
 CONFIG_VERSION = 2                          # the config file's "version"; a file without one is this format's first
 PARALLEL_MAX = 8                            # the engine's batch slots
-CONFIG_PATHS = ("model", "tokenizer", "image-dir")       # relative to the config file
+CONFIG_PATHS = ("model", "tokenizer", "image-dir", "api-key-file")       # relative to the config file
 # a model entry's own, and what it may also inherit from the top-level "engine"; other server options are the server's
 ENTRY_OPTIONS = frozenset({"model", "alias"})
 MODEL_OPTIONS = frozenset({
@@ -172,8 +172,12 @@ def load_config_file(path: str, ap: argparse.ArgumentParser) -> ConfigFile:
         raise ValueError('"models" must be a list of at least one {"model": FILE, ...}')
     for section in (server, shared, *entries):
         for key in section:
-            if re.sub(r"[^a-z]", "", str(key).lower()).startswith("apikey"):
+            if config_name(key) == "api-key":
                 raise ValueError("api-key can't be set in a config file; pass --api-key on the command line")
+    for section in (shared, *entries):
+        for key in section:
+            if config_name(key) == "api-key-file":
+                raise ValueError('api-key-file belongs in the "server" section')
     here = Path(path).resolve().parent
     known = server_options(ap)
     server_argv: list[str] = []
@@ -258,6 +262,12 @@ def parse_settings(ap: argparse.ArgumentParser, cli: list[str], server_argv=(), 
     for act in ap._actions:                                # a repeatable command-line option replaces the file's
         if isinstance(act, argparse._AppendAction) and getattr(a_cli, act.dest) != act.default:
             setattr(a, act.dest, getattr(a_cli, act.dest))
+    # the check runs before the override below: both options set in the namespace, from any mix of the two
+    # sources (the command line's --api-key and the file's --api-key-file included), is the clash
+    if a.api_key and a.api_key_file:
+        raise ValueError("api-key and api-key-file are mutually exclusive: give one, not both")
+    if a_cli.api_key_file:                                 # the command line's own key file wins over the file's
+        a.api_key_file = a_cli.api_key_file
     if a.parallel and a.parallel > 1:
         for flag in ("--batch", "--slots"):
             if flag in file_words or flag in cli_words:
@@ -541,7 +551,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "with strict: true gets it either way); --no-grammar turns it off")
     ap.add_argument("--api-key", default="",
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); command line only, "
-                         "not allowed in a --config file")
+                         "not allowed in a --config file (to keep the key out of the command line: --api-key-file)")
+    ap.add_argument("--api-key-file", default="", metavar="PATH",
+                    help="read an API key from the given file, once at start; "
+                         "leading and trailing CRs and LFs in the file are ignored; "
+                         "mutually exclusive with --api-key")
     ap.add_argument("--allowed-host", action="append", default=[], metavar="NAME",
                     help="also answer to this Host name (repeatable; \"*\" turns the check off)")
     ap.add_argument("--cors-origin", action="append", default=[], metavar="ORIGIN",
