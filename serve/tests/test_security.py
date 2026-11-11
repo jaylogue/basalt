@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.engine.mock import MockEngine  # noqa: E402
 from serve.handler import serve  # noqa: E402
-from serve.security import (allowed_hosts_of, api_key_of, host_allowed, host_name, host_names_for,  # noqa: E402
-                            key_matches, origin_allowed)
+from serve.security import (allowed_hosts_of, api_key_from_file, api_key_of, host_allowed, host_name,  # noqa: E402
+                            host_names_for, key_matches, origin_allowed)
 from serve.service import Service  # noqa: E402
 from serve.util.text import ByteTokenizer  # noqa: E402
 
@@ -291,6 +291,30 @@ class ApiKeyForms(unittest.TestCase):
         for blank in (" ", "\r\n", "\t "):
             with self.assertRaises(ValueError):
                 api_key_of(blank)
+
+    def test_the_key_file_loses_only_the_line_ends_around_it(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for text, want in (("secret", "secret"), ("secret\n", "secret"), ("secret\r\n", "secret"),
+                               ("secret\n\n", "secret"), ("\nsecret", "secret"), ("\r\n\nsecret\r\n", "secret"),
+                               ("two words \n", "two words"), ("clé\n", "clé")):
+                p = os.path.join(d, "k")
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.assertEqual(api_key_of(api_key_from_file(p)), want, text)
+            p = os.path.join(d, "k")                              # the file alone lets only CR and LF go, spaces stay
+            for text, want in ((" secret\n", " secret"), ("\nsecret", "secret"), ("\n secret \n", " secret ")):
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.assertEqual(api_key_from_file(p), want, text)
+            for blank in ("\r\n", "\n", " \n"):        # a blank file never means "no key": api_key_of refuses it
+                with open(os.path.join(d, "blank"), "w") as f:
+                    f.write(blank)
+                with self.assertRaises(ValueError, msg=blank):
+                    api_key_of(api_key_from_file(os.path.join(d, "blank")))
+            with self.assertRaises(OSError):
+                api_key_from_file(os.path.join(d, "missing"))
 
     def test_a_key_outside_ascii_matches_as_utf8_and_as_latin1(self):
         def as_read(key, enc):                                    # what http.server hands the handler

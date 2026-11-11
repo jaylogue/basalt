@@ -9,7 +9,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -489,7 +492,7 @@ class EveryOption(unittest.TestCase):
             return 0.5 if SAMPLING_KEYS[act.dest][0] is float else 7
         # a path the config file resolves against its own directory: absolute in this platform's own form, so the
         # resolution leaves it as it is
-        return str(Path(TMP.name) / "x") if act.dest in ("model", "tokenizer", "image_dir") else "x"
+        return str(Path(TMP.name) / "x") if act.dest in ("model", "tokenizer", "image_dir", "api_key_file") else "x"
 
     def test_every_server_option_by_both_paths(self):
         ap = build_parser()
@@ -553,6 +556,35 @@ class ApiKey(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "api-key can't be set in a config file"):
             load_config_file(conf({"models": [{"model": "m", "api-key": "k"}]}), build_parser())
 
+    def test_the_key_file_is_a_server_setting(self):
+        for key in ("api-key-file", "api_key_file", "--api-key-file", "API-KEY-FILE"):
+            self.assertEqual(parse([], {"server": {key: "k.txt"}})[0].api_key_file,
+                             str(Path(TMP.name) / "k.txt"))                             # resolved against the file
+        p = conf({"server": {"api-key-file": "k.txt"}, "models": [{"model": "m"}]})
+        resolved = load_config_file(p, build_parser()).server_argv
+        self.assertEqual(resolved, ["--api-key-file", str(Path(p).parent / "k.txt")])   # relative to the file
+        for path in (conf({"version": 2, "engine": {"api-key-file": "k"}, "models": [{"model": "m"}]}),
+                     conf({"version": 2, "models": [{"model": "m", "api-key-file": "k"}]})):   # not "server"
+            with self.assertRaisesRegex(ValueError, 'api-key-file belongs in the "server" section'):
+                load_config_file(path, build_parser())
+
+    def test_key_and_key_file_are_exclusive(self):
+        key_file = write("s3cret\n", "key.txt")
+        for cli in (["--api-key", "k", "--api-key-file", key_file], ["--api-key-file", key_file, "--api-key", "k"]):
+            with self.assertRaisesRegex(ValueError, "api-key and api-key-file are mutually exclusive"):
+                parse(cli)                                    # the call stands alone: parsed inside the guard
+        with self.assertRaisesRegex(ValueError, "api-key and api-key-file are mutually exclusive"):
+            parse(["--api-key", "k"], {"server": {"api-key-file": key_file}})
+        with self.assertRaisesRegex(ValueError, "api-key and api-key-file are mutually exclusive"):
+            parse(["--api-key", "k"], {"server": {"api-key-file": "other.txt"}})   # presence, not the value
+        with self.assertRaisesRegex(ValueError, "api-key and api-key-file are mutually exclusive"):
+            parse(["--api-key=k", "--api-key-file", key_file])                     # the = form counts as given
+        # the option in both sources is not a clash: the command line's own path wins, as everywhere
+        self.assertEqual(parse(["--api-key-file", key_file], {"server": {"api-key-file": "other.txt"}})[0].api_key_file,
+                         key_file)
+        self.assertEqual(parse(["--api-key", "k"])[0].api_key_file, "")
+        self.assertEqual(parse(["--api-key-file", key_file])[0].api_key, "")
+
     def test_a_network_host_from_the_config_starts_without_a_key(self):
         cfg = {"server": {"host": "0.0.0.0"}}
         self.assertEqual(parse([], cfg)[0].host, "0.0.0.0")
@@ -596,10 +628,70 @@ class Startup(unittest.TestCase):
         code, err = self.run_server({"models": [entry], "server": {"api-key": "k"}})
         self.assertEqual(code, 2)
         self.assertIn("api-key can't be set in a config file", err)
+
+    def test_the_key_file_is_checked_at_start(self):
+        entry = {"model": "m.basalt"}
+        with tempfile.TemporaryDirectory() as d:
+            key, blank = d + "/k", d + "/blank"
+            open(key, "w").write("s3cret\n")
+            open(blank, "w").write("\n")
+            code, err = self.run_server({"models": [entry]}, "--mock-engine", "--api-key", "k",
+                                        "--api-key-file", key)
+            self.assertEqual(code, 2)
+            self.assertIn("api-key and api-key-file are mutually exclusive", err)
+            code, err = self.run_server({"models": [entry], "server": {"api-key-file": key}}, "--api-key", "k")
+            self.assertEqual(code, 2)
+            self.assertIn("api-key and api-key-file are mutually exclusive", err)
+            code, err = self.run_server({"models": [entry]}, "--mock-engine", "--api-key-file", d + "/missing")
+            self.assertEqual(code, 2)
+            self.assertIn("--api-key-file: cannot read the key", err)
+            code, err = self.run_server({"models": [entry]}, "--mock-engine", "--api-key-file", blank)
+            self.assertEqual(code, 2)
+            self.assertIn("give a key, or leave --api-key-file out", err)
         code, err = self.run_server({"models": [entry], "server": {"nope": 1}})
         self.assertIn("not a server option", err)
         code, err = self.run_server({"models": [entry], "server": {"port": "abc"}})
         self.assertEqual(code, 2)
+
+
+class KeyedStartup(unittest.TestCase):
+    """A keyed mock server started with --api-key-file answers /v1/* with the key, and only with it."""
+
+    def get(self, port, headers):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/models", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def test_the_server_starts_keyed_from_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            key = str(Path(d) / "k")
+            with open(key, "w") as f:
+                f.write("s3cret\n")
+            port = free_port()
+            cfg = conf(v2({"server": {"mock-engine": True, "api-key-file": key, "port": port}}))
+            p = subprocess.Popen([sys.executable, "-m", "serve.server", "--config", cfg], cwd=ROOT, env=os.environ,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.time() + 60
+                while time.time() < deadline:
+                    if p.poll() is not None:
+                        self.fail(f"the server exited with {p.returncode}")
+                    try:
+                        code = self.get(port, {"Authorization": "Bearer s3cret"})
+                    except (urllib.error.URLError, ConnectionError):
+                        time.sleep(0.3)
+                        continue
+                    self.assertEqual(code, 200)
+                    self.assertEqual(self.get(port, {}), 401)
+                    self.assertEqual(self.get(port, {"Authorization": "Bearer nope"}), 401)
+                    return
+                self.fail("the server did not come up")
+            finally:
+                p.terminate()
+                p.wait(timeout=10)
 
 
 if __name__ == "__main__":
